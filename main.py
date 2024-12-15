@@ -23,9 +23,11 @@ class MainWindow(QMainWindow):
         self.current_actor = None
         self.filename = None
 
-        # Clipping plane and widget
+        # Clipping planes and widgets
         self.clipping_plane = vtk.vtkPlane()
+        self.clipping_plane2 = vtk.vtkPlane()  # Add second clipping plane
         self.plane_widget = None
+        self.plane_widget2 = None
 
         # Original PolyData for undo functionality
         self.original_polydata = None
@@ -33,6 +35,7 @@ class MainWindow(QMainWindow):
         # Flags to control clipping state
         self.clipping_enabled = False
         self.clipping_applied = False
+        self.dual_plane_mode = False  # Add dual plane mode flag
 
     def initUI(self):
         self.centralWidget = QWidget(self)
@@ -77,6 +80,17 @@ class MainWindow(QMainWindow):
         buttons_layout.addWidget(self.exportButton)
         self.exportButton.clicked.connect(self.export_stl)
 
+        # Add Dual Plane Button
+        self.dualPlaneButton = QPushButton("Enable Dual Planes")
+        buttons_layout.addWidget(self.dualPlaneButton)
+        self.dualPlaneButton.clicked.connect(self.toggle_dual_planes)
+
+        # Add Delete Between Planes Button
+        self.deleteBetweenButton = QPushButton("Delete Between Planes")
+        self.deleteBetweenButton.setEnabled(False)
+        buttons_layout.addWidget(self.deleteBetweenButton)
+        self.deleteBetweenButton.clicked.connect(self.delete_between_planes)
+
         self.main_layout.addLayout(buttons_layout)
 
         # Set the layout
@@ -94,7 +108,7 @@ class MainWindow(QMainWindow):
         interactor_style = vtk.vtkInteractorStyleTrackballCamera()
         self.interactor.SetInteractorStyle(interactor_style)
 
-        # **Initialize the interactor and perform an initial render**
+        # Initialize the interactor and perform an initial render
         self.interactor.Initialize()
         self.vtkWidget.GetRenderWindow().Render()
 
@@ -135,7 +149,6 @@ class MainWindow(QMainWindow):
         self.renderer.AddActor(self.current_actor)
         self.renderer.ResetCamera()
         self.vtkWidget.GetRenderWindow().Render()
-        # **Interactor is already initialized, so no need to call Initialize again**
 
         # Disable previous plane widget if any
         if self.plane_widget:
@@ -257,6 +270,151 @@ class MainWindow(QMainWindow):
         writer.Write()
 
         QMessageBox.information(self, "Success", "STL file exported successfully.")
+
+    def toggle_dual_planes(self):
+        if not self.current_actor:
+            QMessageBox.warning(self, "Error", "No STL file loaded.")
+            return
+
+        if not self.dual_plane_mode:
+            # Enable both clipping planes
+            self.create_dual_plane_widgets()
+            self.dual_plane_mode = True
+            self.dualPlaneButton.setText("Disable Dual Planes")
+            self.deleteBetweenButton.setEnabled(True)
+            self.enableClipButton.setEnabled(False)  # Disable single plane mode
+        else:
+            # Disable both clipping planes
+            self.disable_dual_planes()
+            self.dual_plane_mode = False
+            self.dualPlaneButton.setText("Enable Dual Planes")
+            self.deleteBetweenButton.setEnabled(False)
+            self.enableClipButton.setEnabled(True)
+
+    def create_dual_plane_widgets(self):
+        # Create first plane widget
+        self.plane_widget = vtk.vtkImplicitPlaneWidget()
+        self.plane_widget.SetInteractor(self.interactor)
+        self.plane_widget.SetPlaceFactor(1.0)  # Adjust the size of the widget
+        self.plane_widget.SetInputData(self.mapper.GetInput())
+        self.plane_widget.PlaceWidget()
+        
+        # Configure first plane appearance
+        self.plane_widget.OutlineTranslationOff()
+        self.plane_widget.OutsideBoundsOff()
+        self.plane_widget.ScaleEnabledOff()
+        self.plane_widget.DrawPlaneOn()  # Ensure the plane is visible
+        self.plane_widget.SetOriginTranslation(False)
+        self.plane_widget.SetOutlineTranslation(False)
+        
+        # Set properties for better visualization
+        plane_prop = self.plane_widget.GetPlaneProperty()
+        plane_prop.SetOpacity(0.3)
+        plane_prop.SetColor(1.0, 0.0, 0.0)  # Set color to red for visibility
+        
+        # Hide the outline
+        outline_prop = self.plane_widget.GetOutlineProperty()
+        outline_prop.SetOpacity(0)
+        
+        self.plane_widget.AddObserver("InteractionEvent", self.on_dual_plane_interaction)
+        self.plane_widget.On()
+
+        # Create second plane widget
+        self.plane_widget2 = vtk.vtkImplicitPlaneWidget()
+        self.plane_widget2.SetInteractor(self.interactor)
+        self.plane_widget2.SetPlaceFactor(1.0)
+        self.plane_widget2.SetInputData(self.mapper.GetInput())
+        self.plane_widget2.PlaceWidget()
+        
+        # Configure second plane appearance
+        self.plane_widget2.OutlineTranslationOff()
+        self.plane_widget2.OutsideBoundsOff()
+        self.plane_widget2.ScaleEnabledOff()
+        self.plane_widget2.DrawPlaneOn()  # Ensure the plane is visible
+        self.plane_widget2.SetOriginTranslation(False)
+        self.plane_widget2.SetOutlineTranslation(False)
+        
+        # Set properties for better visualization
+        plane_prop2 = self.plane_widget2.GetPlaneProperty()
+        plane_prop2.SetOpacity(0.3)
+        plane_prop2.SetColor(0.0, 1.0, 0.0)  # Set color to green for visibility
+        
+        # Hide the outline
+        outline_prop2 = self.plane_widget2.GetOutlineProperty()
+        outline_prop2.SetOpacity(0)
+        
+        self.plane_widget2.AddObserver("InteractionEvent", self.on_dual_plane_interaction)
+        self.plane_widget2.On()
+
+    def disable_dual_planes(self):
+        if self.plane_widget:
+            self.plane_widget.Off()
+            self.plane_widget = None
+        if self.plane_widget2:
+            self.plane_widget2.Off()
+            self.plane_widget2 = None
+
+        self.mapper.SetInputData(self.original_polydata)
+        self.vtkWidget.GetRenderWindow().Render()
+
+    def on_dual_plane_interaction(self, caller, event):
+        # Update both clipping planes
+        self.plane_widget.GetPlane(self.clipping_plane)
+        self.plane_widget2.GetPlane(self.clipping_plane2)
+
+        # First clipper: keep everything in front of the first plane
+        clipper1 = vtk.vtkClipPolyData()
+        clipper1.SetInputData(self.original_polydata)
+        clipper1.SetClipFunction(self.clipping_plane)
+        clipper1.Update()
+
+        # Second clipper: keep everything behind the second plane
+        clipper2 = vtk.vtkClipPolyData()
+        clipper2.SetInputData(clipper1.GetOutput())
+        clipper2.SetClipFunction(self.clipping_plane2)
+        clipper2.InsideOutOn()  # Invert the clipping of the second plane
+        clipper2.Update()
+
+        # Check if the output is not empty
+        if clipper2.GetOutput().GetNumberOfCells() > 0:
+            self.mapper.SetInputData(clipper2.GetOutput())
+            self.vtkWidget.GetRenderWindow().Render()
+
+    def delete_between_planes(self):
+        if not self.dual_plane_mode:
+            return
+
+        # First clipper: keep everything in front of the first plane
+        clipper1 = vtk.vtkClipPolyData()
+        clipper1.SetInputData(self.original_polydata)
+        clipper1.SetClipFunction(self.clipping_plane)
+        clipper1.Update()
+
+        # Second clipper: keep everything behind the second plane
+        clipper2 = vtk.vtkClipPolyData()
+        clipper2.SetInputData(self.original_polydata)
+        clipper2.SetClipFunction(self.clipping_plane2)
+        clipper2.InsideOutOn()  # Keep what's behind the second plane
+        clipper2.Update()
+
+        # Append the results
+        append = vtk.vtkAppendPolyData()
+        append.AddInputData(clipper1.GetOutput())
+        append.AddInputData(clipper2.GetOutput())
+        append.Update()
+
+        # Update the data
+        self.original_polydata = append.GetOutput()
+        self.mapper.SetInputData(self.original_polydata)
+        
+        # Disable the planes after deletion
+        self.disable_dual_planes()
+        self.dual_plane_mode = False
+        self.dualPlaneButton.setText("Enable Dual Planes")
+        self.deleteBetweenButton.setEnabled(False)
+        self.enableClipButton.setEnabled(True)
+        
+        self.vtkWidget.GetRenderWindow().Render()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
